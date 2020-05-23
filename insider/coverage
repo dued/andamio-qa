@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+[ "$VERBOSE" -lt 1 ] || set -x
+
+# Comprobar si complementos existen
+returncode=0
+addons="$(addons list -ix $ADDON_CATEGORIES)" || returncode=$?
+
+# Si no se encuentran complementos, está hecho
+[ "$returncode" -ne 4 ] || exit 0
+
+# Falla si hay otro error al encontrar complementos
+[ "$returncode" -eq 0 ] || exit "$returncode"
+
+# Activar dependencias internas
+source /qa/venv/bin/activate
+
+# Probar complementos e informar cobertura
+odoo="$(realpath "$(which odoo)")"
+cd
+coverage run \
+    --source "$(addons list -ixf $ADDON_CATEGORIES)" \
+    --omit '*/__openerp__.py,*/__manifest__.py,/opt/odoo/custom/src/*/*/__init__.py' \
+    "$odoo" --stop-after-init --workers 0 --test-enable --init "$addons"
+returncode=$?
+coverage report --skip-covered
+mkdir -p /qa/artifacts/coverage
+coverage html --skip-covered --directory /qa/artifacts/coverage
+exit $returncode

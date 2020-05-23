@@ -1,0 +1,53 @@
+sudo: required
+
+language: python
+
+python:
+  - "3.8"
+
+services:
+  - docker
+
+git:
+  depth: 1
+
+branches:
+  only:
+    - master
+
+env:
+  global:
+    # Variables encontradas por defecto en el generador Docker Hub
+    - IMAGE_NAME=dued/andamio-qa:latest
+    # Versión de Postgres para probar
+    - DB_VERSION=12
+    # Esto evitará desplegar muchas veces la misma imagen andamio-qa
+    - DEPLOY_VERSION=13.0
+  matrix:
+    - ODOO_MINOR=8.0 DB_VERSION=9.6
+    - ODOO_MINOR=9.0 DB_VERSION=10
+    - ODOO_MINOR=10.0 DB_VERSION=11
+    - ODOO_MINOR=11.0
+    - ODOO_MINOR=12.0
+    - ODOO_MINOR=13.0
+
+before_install:
+  - sudo apt-get update
+  - sudo apt-get -y -o Dpkg::Options::=--force-confnew install docker-ce
+  - pip install -r requirements-ci.txt
+
+install:
+  - chown -R $USER:$USER .
+  - chmod -R +r .
+  - ./hooks/build
+
+script:
+  - python -m unittest -v tests
+
+deploy:
+  provider: script
+  script: ./hooks/push
+  on:
+    branch: master
+    condition:
+      - $ODOO_MINOR = $DEPLOY_VERSION

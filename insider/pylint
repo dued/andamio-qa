@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -e
+[ "$VERBOSE" -lt 1 ] || set -x
+
+# Comprobar si complementos existen
+errorcode=0
+addons="$(addons list -ifxs ' ' $ADDON_CATEGORIES)" || errorcode=$?
+
+# Si no se encuentran complementos, está hecho
+[ "$errorcode" -eq 4 ] && exit 0 || [ "$errorcode" -eq 0 ]
+
+# Configura pylint
+if [ -n "$LINT_ENABLE" ]; then
+    enable="--enable $LINT_ENABLE"
+fi
+if [ -n "$LINT_DISABLE" ]; then
+    disable="--disable $LINT_DISABLE"
+fi
+
+# Activar dependencias internas
+source /qa/venv/bin/activate
+cd /qa
+
+# Lint
+# TODO Usa MQT's `test_pylint` directamente cuando se vuelve más reutilizable
+code=0
+for addon in $addons; do
+    pylint --load-plugins pylint_odoo \
+        --rcfile /qa/mqt/travis/cfg/$PYLINT_CONFIG_FILE \
+        --valid_odoo_versions=$ODOO_VERSION \
+        $enable $disable $addon || code=$?
+done
+
+exit $code

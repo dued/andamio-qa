@@ -1,0 +1,261 @@
+# Include this file! See https://docs.gitlab.com/ce/ci/yaml/#include
+image: dued/andamio-qa
+
+.standard-rules: &standard-rules
+  rules:
+    - if: &main-mr $CI_MERGE_REQUEST_TARGET_BRANCH_NAME =~ /^\d+\.\d+$/
+      when: on_success
+    - if: &main-branches $CI_COMMIT_REF_NAME =~ /^\d+\.\d+$/
+      when: on_success
+
+variables:
+  ADDON_CATEGORIES: "" # Reemplazar por ADDONS_STANDARD y ADDONS_CUSTOM
+  COMPOSE_FILE: test.yaml
+  COMPOSE_PROJECT_NAME: &pipeline $CI_PROJECT_PATH_SLUG-$CI_PIPELINE_ID
+  ANDAMIO_WITHOUT_DEMO: "false"
+  ODOO_IMAGE: *pipeline
+  # Debes cambiar esta variable
+  REVIEW_DOMAIN: ci.ejemplo.com
+
+stages:
+  - build
+  - rebuild
+  - install
+  - test
+  - runbot
+  - ci cleanup
+  - push
+  - deploy
+  - staging
+  - production
+  - cd cleanup
+
+before_script:
+  - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  - secrets-setup
+  - networks-autocreate
+
+# Build . Construir
+Pull and build images:
+  <<: *standard-rules
+  stage: build
+  script:
+    - build
+
+# rebuild
+# Trabajos manuales para actualizar el registro cuando necesita 
+# reconstruir y no ha habido cambios de código en su andamiaje, 
+# o cuando falla el resto de su canalización, pero aún necesita 
+# la nueva imagen en el registry
+Rebuild without cache and push: &rebuild
+  stage: rebuild
+  rules:
+    - if: *main-branches
+      when: manual
+      allow_failure: true
+  script:
+    # Use o no caché dependiendo de $BUILD_FLAGS para el trabajo
+    - test "$DO_BUILD" == 0 || build
+    # Obtenga los servicios que crean imágenes
+    - image_builder_services="$(docker-compose config | yq -r '.services|to_entries|map(select(.value.build))[].key')"
+    # Re-etiqueta imágenes específicas de canalización con sus nombres de registro reales
+    - |
+      for service in $image_builder_services; do
+        pipeline_image="$(docker-compose config | yq --arg service "$service" -r '.services[$service].image')"
+        real_image="$(env -u ODOO_IMAGE docker-compose config | yq --arg service "$service" -r '.services[$service].image')"
+        docker image tag "$pipeline_image" "$real_image"
+      done
+    # Tubería específica de imágenes reales al registro, con cualquier otra que se esté construyendo
+    - env -u ODOO_IMAGE docker-compose push
+
+Rebuild with cache and push:
+  <<: *rebuild
+  variables:
+    BUILD_FLAGS: ""
+
+# Install - Instalación
+Install addons:
+  <<: *standard-rules
+  stage: install
+  variables:
+    # Instale todos los complementos que son dependencias de los probados más tarde
+    ADDONS_STANDARD: >
+      --dependencies
+      --extra
+      --private
+  script:
+
+    # Si proporciona $ ADDON_CATEGORIES, se usará sin procesar; pero puede
+    # usar en su lugar una combinación de $ ADDONS_STANDARD (que puede estar
+    # en una plantilla) y $ ADDONS_CUSTOM (que puede estar en el andamio) 
+    #para que sea más fácil agregar o quitar complementos a las listas blancas o negras
+    - &addon-categories export ADDON_CATEGORIES="${ADDON_CATEGORIES:-$ADDONS_STANDARD $ADDONS_CUSTOM}"
+    - addons-install
+
+# Lint
+Closed PRs:
+  stage: test
+  allow_failure: true
+  rules:
+    - if: *main-mr
+      when: always
+    - if: *main-branches
+      when: always
+  script:
+    - closed-prs
+
+Run pre-commit:
+  stage: test
+  cache:
+    key:
+      files:
+        - .pre-commit-config.yaml
+    paths:
+      - .pre-commit-cache.~
+  rules:
+    - if: *main-mr
+      when: always
+      exists:
+        - .pre-commit-config.yaml
+    - if: *main-branches
+      when: always
+      exists:
+        - .pre-commit-config.yaml
+  variables:
+    PRE_COMMIT_HOME: "$CI_PROJECT_DIR/.pre-commit-cache.~"
+  script:
+    - pre-commit run -av --color always --show-diff-on-failure
+
+# Linters obsoletos
+Pylint loose: &pylint
+  stage: test
+  rules:
+    - &skip-if-pre-commit-exists
+      when: never
+      exists:
+        - .pre-commit-config.yaml
+    - if: *main-mr
+      when: always
+    - if: *main-branches
+      when: always
+  variables:
+    ADDONS_STANDARD: --private
+    LINT_MODE: "loose"
+  script:
+    - *addon-categories
+    - pylint
+
+Pylint strict warnings:
+  <<: *pylint
+  rules:
+    - *skip-if-pre-commit-exists
+    - if: *main-branches
+      when: always
+      allow_failure: true
+    - if: *main-mr
+      when: always
+  variables:
+    LINT_MODE: "strict"
+
+Pylint beta warnings:
+  <<: *pylint
+  allow_failure: true
+  variables:
+    LINT_MODE: "beta"
+
+Flake8:
+  stage: test
+  rules:
+    - *skip-if-pre-commit-exists
+    - if: *main-mr
+      when: always
+    - if: *main-branches
+      when: always
+  variables:
+    ADDONS_STANDARD: --private
+  script:
+    - *addon-categories
+    - flake8
+
+# Test - Pruebas automatizadas
+Test addons:
+  <<: *standard-rules
+  variables:
+    # Pruebas: los --private addons son casi obligatorios, y las pruebas:
+    # --extra addons (generalmente de OCA) o --core addons pueden ayudar a
+    # garantizar que su proyecto tenga un buen estado de integración, aunque
+    # existe un mayor riesgo de que los cambios de addons o complementos externos
+    # rompan sus tuberías inecesariamente; también puede incluir addons
+    # específicos en la lista negra agregando `--without myaddon` tantas 
+    # veces como sea necesario, o incluirlos siempre agregando` --with miaddon`
+    ADDONS_STANDARD: >
+      --extra
+      --private
+      --without auth_brute_force
+      --without database_cleanup
+      --without website_sale_require_login
+  script:
+    - *addon-categories
+    - coverage
+    - mv artifacts/coverage . || true
+  artifacts:
+    paths:
+      - coverage
+    when: always
+  coverage: /TOTAL.* (\d+)%/
+
+# Recursos gratuitos si algo falla
+Cleanup failed test resources:
+  stage: ci cleanup
+  rules:
+    - if: *main-branches
+      when: on_failure
+    - if: *main-mr
+      when: on_failure
+  variables:
+    # No elimine las imágenes locales, solo en caso de que quiera hacer
+    # force-push con caché; se espera que configure algún tipo de limpieza 
+    # para su motor de docker externamente
+    DESTROY_FLAGS: -v --remove-orphans
+  script:
+    - shutdown
+
+# Runbot
+Boot runbot:
+  <<: *standard-rules
+  stage: runbot
+  variables:
+    DOMAIN_TEST: $CI_ENVIRONMENT_SLUG.$REVIEW_DOMAIN
+  environment:
+    name: review $CI_COMMIT_REF_NAME
+    # TODO Reuse $DOMAIN_TEST instead
+    # HACK https://gitlab.com/gitlab-org/gitlab-runner/issues/2487
+    url: https://$CI_ENVIRONMENT_SLUG.$REVIEW_DOMAIN
+    on_stop: Destroy runbot
+  script:
+    - docker-compose up -d
+
+Destroy runbot:
+  stage: runbot
+  rules:
+    - if: *main-branches
+      when: manual
+      allow_failure: true
+    - if: *main-mr
+      when: manual
+      allow_failure: true
+  environment:
+    name: review $CI_COMMIT_REF_NAME
+    action: stop
+  script:
+    - destroy
+
+# Actualiza registry
+Push docker image:
+  <<: *rebuild
+  stage: push
+  variables:
+    DO_BUILD: 0
+  rules:
+    - if: *main-branches
+      when: on_success

@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+set -e
+[ "$VERBOSE" -lt 1 ] || set -x
+
+# Destruye todas las cosas especificadas
+docker-compose down $DESTROY_FLAGS

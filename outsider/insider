@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""
+Ejecute cualquier script interno.
+
+Este archivo debe tener un enlace simbólico para que cada uno de los scripts
+internos disponibles sirva como punto de entrada solo para ellos.
+"""
+import logging
+import os
+import subprocess
+import sys
+import tempfile
+import zipfile
+
+_logger = logging.getLogger("andamio-qa")
+_logger.setLevel(logging.DEBUG if os.environ["VERBOSE"] == "1"
+                 else logging.INFO)
+ARTIFACTS_DIR = os.environ["ARTIFACTS_DIR"]
+LINTERS = {"flake8", "pylint"}
+
+# Verifique que este archivo se esté ejecutando correctamente
+script = os.path.basename(sys.argv[0])
+full_script = None
+with open("/usr/local/src/insider/{}".format(script), "r") as fd:
+    full_script = fd.read()
+cmd = [
+    "docker-compose", "run", "--rm",
+    "-e", "ADDON_CATEGORIES",
+    "-e", "VERBOSE",
+    "-e", "PYTHONOPTIMIZE",
+    # Remove TTY, necesario para dividir correctamente STDOUT y STDERR
+    "-T",
+    # Evite posibles problemas de enrutamiento en Traefik
+    "--label", "traefik.enable=false",
+]
+if os.environ["VERBOSE"] == "1":
+    cmd += [
+        "-e", "LOG_LEVEL=DEBUG",
+    ]
+if script in LINTERS:
+    modes = {
+        "loose": "travis_run_pylint.cfg",
+        "strict": "travis_run_pylint_pr.cfg",
+        "beta": "travis_run_pylint_beta.cfg",
+    }
+    cmd += [
+        # Las linters no necesitan otros contenedores
+        "--no-deps",
+        "-e", "WAIT_DB=false",
+        "-e", "UNACCENT=false",
+        # Configuración directa de linter
+        "-e", "LINT_DISABLE",
+        "-e", "LINT_ENABLE",
+        # Elija el archivo de configuración de pylint para usar
+        "-e", "PYLINT_CONFIG_FILE={}".format(modes[os.environ["LINT_MODE"]]),
+    ]
+cmd += ["odoo", "/qa/insider", full_script, *sys.argv[1:]]
+
+# Execute insider command
+with tempfile.TemporaryFile() as tmp_fd, \
+        os.fdopen(sys.stderr.fileno(), "wb", closefd=False) as stderr_bytes:
+    result = subprocess.run(cmd, stdout=tmp_fd, stderr=stderr_bytes)
+    tmp_fd.flush()
+    tmp_fd.seek(0)
+    # Obtener artefactos o redireccionar log-registros
+    if not zipfile.is_zipfile(tmp_fd):
+        tmp_fd.seek(0)
+        stderr_bytes.write(tmp_fd.read())
+        stderr_bytes.flush()
+    else:
+        _logger.debug("Descomprimiendo artifactos")
+        tmp_fd.seek(0)
+        with zipfile.ZipFile(tmp_fd) as zip_fd:
+            zip_fd.extractall(ARTIFACTS_DIR)
+        # Fix artifacts folder permissions
+        uid = int(os.environ.get("ARTIFACTS_UID", os.getuid()))
+        gid = int(os.environ.get("ARTIFACTS_GID", os.getgid()))
+        if uid != os.getuid() or gid != os.getgid():
+            _logger.debug("Fijando permisos de artefactos")
+            for root, dirs, files in os.walk(ARTIFACTS_DIR):
+                os.chown(root, uid, gid)
+                for target in dirs + files:
+                    os.chown(os.path.join(root, target), uid, gid)
+
+# Same return code as the insider command
+sys.exit(result.returncode)

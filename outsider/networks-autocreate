@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""Realiza la preparación necesaria para ejecutar cualquier script de QA."""
+import logging
+import os
+import subprocess
+
+import docker
+import yaml
+
+_logger = logging.getLogger("andamio-qa")
+_logger.setLevel(logging.DEBUG if os.environ["VERBOSE"] == "1"
+                 else logging.INFO)
+
+# Crea las redes externas que faltan
+compose_contents = subprocess.check_output(["docker-compose", "config"])
+compose_contents = yaml.safe_load(compose_contents)
+client = docker.from_env()
+for network in compose_contents.get("networks", {}).values():
+    if network.get("external"):
+        try:
+            client.networks.get(network["name"])
+        except docker.errors.NotFound:
+            _logger.info("Creando red faltante %s", network["name"])
+            client.networks.create(network["name"])

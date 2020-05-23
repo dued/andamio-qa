@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+from plumbum import FG, local
+from plumbum.cmd import docker  # noqa pylint: disable=import-error
+
+# NOTA: # noqa en la línea de código indica que el linter
+# (un programa que verifica automáticamente la calidad del código)
+# no debe verificar esta línea. Cualquier advertencia que haya
+# generado el código será ignorada.
+
+IMAGE_NAME = local.env["IMAGE_NAME"]
+REPO = IMAGE_NAME.split(":")[0]
+
+# Registre todas las imágenes disponibles localmente; ayudará a fijar imágenes
+docker["image", "ls", "--digests", REPO] & FG
+
+# Login en Docker Hub
+docker(
+    "login",
+    "--username",
+    local.env["DOCKER_HUB_USERNAME"],
+    "--password",
+    local.env["DOCKER_HUB_TOKEN"],
+)
+
+# Empuje la imagen construida
+docker["image", "push", IMAGE_NAME] & FG

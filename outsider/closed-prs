@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+[ "$VERBOSE" -lt 1 ] || set -x
+
+# Use Git Aggregator para obtener PRs cerradas
+tmp="$(mktemp)"
+gitaggregate show-closed-prs -c "$REPOS_FILE" 2>&1 | tee "$tmp"
+
+# Si hubo salida, falla
+if [ -s $tmp ]; then
+    exit 1
+fi

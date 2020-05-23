@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+from plumbum import FG, local
+
+COMMIT = local.env.get("GIT_SHA1", local.env.get("TRAVIS_COMMIT", ""))
+IMAGE_NAME = local.env["IMAGE_NAME"]
+ROOT = local.path(__file__).up(2)
+VERSION = IMAGE_NAME.split(":")[1]
+
+# Shortcuts - Atajos
+build = local["time"]["docker", "image", "build"]
+date = local["date"]["--rfc-3339", "ns"]
+tag = local["docker"]["image", "tag"]
+
+# Construir imágenes base y onbuild
+build[
+    "--tag",
+    IMAGE_NAME,
+    # See http://label-schema.org/rc1/#build-time-labels
+    "--build-arg",
+    "VCS_REF=%s" % COMMIT,
+    "--build-arg",
+    "BUILD_DATE=%s" % date().strip(),
+    "--build-arg",
+    "VERSION=%s" % VERSION,
+    ROOT,
+] & FG

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -e
+[ "$VERBOSE" -lt 1 ] || set -x
+
+# Comprobar si complementos existen
+errorcode=0
+addons="$(addons list -ix $ADDON_CATEGORIES)" || errorcode=$?
+
+# Si no se encuentran complementos, está hecho
+[ "$errorcode" -eq 4 ] && exit 0 || [ "$errorcode" -eq 0 ]
+
+# Crear DB si es necesario
+[ "$ODOO_VERSION" != 8.0 ] || createdb || true
+
+# Instale todos los complementos necesarios
+addons init -x $ADDON_CATEGORIES
